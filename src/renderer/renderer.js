@@ -90,6 +90,10 @@ const isEnableGraphicsOffload = extSettings
     : false;
 const haveGraphicsOffload = isGtkVersionAtLeast(4, 14) && isEnableGraphicsOffload;
 
+const isGskVulkan = GLib.getenv('GSK_RENDERER') === 'vulkan';
+if (isGskVulkan)
+    console.log('GSK_RENDERER is set to vulkan. Enabling Vulkan optimizations.');
+
 let codePath = 'src';
 let contentFit = null;
 if (haveContentFit) {
@@ -423,14 +427,20 @@ const HanabiRenderer = GObject.registerClass(
                 return null;
 
             if (useGstGL) {
-                let glsink = Gst.ElementFactory.make(
-                    'glsinkbin',
-                    'glsinkbin'
-                );
-                if (glsink) {
-                    this._gstImplName = `glsinkbin + ${this._gstImplName}`;
-                    glsink.set_property('sink', sink);
-                    sink = glsink;
+                // If using Vulkan, skip glsinkbin as it forces OpenGL conversion.
+                // gtk4paintablesink will handle Vulkan natively if the backend is available.
+                if (isGskVulkan) {
+                    this._gstImplName = `vulkan-optimized + ${this._gstImplName}`;
+                } else {
+                    let glsink = Gst.ElementFactory.make(
+                        'glsinkbin',
+                        'glsinkbin'
+                    );
+                    if (glsink) {
+                        this._gstImplName = `glsinkbin + ${this._gstImplName}`;
+                        glsink.set_property('sink', sink);
+                        sink = glsink;
+                    }
                 }
             }
             this._play = GstPlay.Play.new(
