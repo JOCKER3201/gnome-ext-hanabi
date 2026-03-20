@@ -21,7 +21,6 @@
  * ManageWindow and EmulateX11WindowType in the DING extension.
  */
 
-import Meta from 'gi://Meta';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import * as Config from 'resource:///org/gnome/shell/misc/config.js';
@@ -95,12 +94,12 @@ class ManagedWindow {
         // Ref: https://gitlab.gnome.org/GNOME/mutter/-/issues/3159
         if (shellVersion === 45) {
             let windowActor = window.get_compositor_private();
-            let surfaceContainer = windowActor.get_children().find(
+            this._surfaceContainer = windowActor.get_children().find(
                 child => GObject.type_name(child) === 'MetaSurfaceContainerActorWayland'
             );
-            if (surfaceContainer) {
-                this._notifyPositionId = surfaceContainer.connect('notify::position', () => {
-                    surfaceContainer.set_position(0, 0);
+            if (this._surfaceContainer) {
+                this._notifyPositionId = this._surfaceContainer.connect('notify::position', () => {
+                    this._surfaceContainer.set_position(0, 0);
                 });
             }
         }
@@ -135,8 +134,8 @@ class ManagedWindow {
     }
 
     disconnect() {
-        if (this._notifyPositionId)
-            GLib.source_remove(this._notifyPositionId);
+        if (this._notifyPositionId && this._surfaceContainer)
+            this._surfaceContainer.disconnect(this._notifyPositionId);
 
         this._signals.forEach(signal => {
             this._window.disconnect(signal);

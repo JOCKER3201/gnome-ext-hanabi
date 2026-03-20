@@ -27,6 +27,8 @@ import * as PlaybackState from './playbackState.js';
 import * as AutoPause from './autoPause.js';
 import * as PanelMenu from './panelMenu.js';
 
+const applicationId = 'io.github.jeffshee.HanabiRenderer';
+
 export default class HanabiExtension extends Extension {
     constructor(metadata) {
         super(metadata);
@@ -53,11 +55,42 @@ export default class HanabiExtension extends Extension {
         if (this.settings.get_boolean('show-panel-menu'))
             this.panelMenu.enable();
 
-        this.settings.connect('changed::show-panel-menu', () => {
+        this._showPanelMenuId = this.settings.connect('changed::show-panel-menu', () => {
             if (this.settings.get_boolean('show-panel-menu'))
                 this.panelMenu.enable();
             else
                 this.panelMenu.disable();
+        });
+
+        this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {
+            if (this.isEnabled) {
+                // When monitors change (e.g., HDR toggle), the renderer windows
+                // end up at wrong coordinates. We relaunch it to fix the layout.
+                // We use a larger delay (4s) to allow the system (and scripts like hdr-toggle)
+                // to finish their internal layout and mode updates.
+                this.killCurrentProcess(false);
+                if (this.launchRendererId)
+                    GLib.source_remove(this.launchRendererId);
+
+                this.launchRendererId = GLib.timeout_add(
+                    GLib.PRIORITY_DEFAULT,
+                    4000,
+                    () => {
+                        this.launchRendererId = 0;
+                        this.launchRenderer();
+
+                        // We add a short delay to ensure the renderer windows are created
+                        // before we trigger the background refresh.
+                        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+                            if (this.isEnabled && this.override)
+                                this.override._reloadBackgrounds();
+                            return false;
+                        });
+
+                        return false;
+                    }
+                );
+            }
         });
 
         /**
@@ -67,8 +100,10 @@ export default class HanabiExtension extends Extension {
 
         if (Main.layoutManager._startingUp) {
             Main.sessionMode.hasOverview = false;
-            Main.layoutManager.connect('startup-complete', () => {
+            this._startupCompleteId2 = Main.layoutManager.connect('startup-complete', () => {
                 Main.sessionMode.hasOverview = this.old_hasOverview;
+                Main.layoutManager.disconnect(this._startupCompleteId2);
+                this._startupCompleteId2 = null;
             });
             // Handle Ubuntu's method
             if (Main.layoutManager.startInOverview)
@@ -88,8 +123,10 @@ export default class HanabiExtension extends Extension {
                 'startup-complete',
                 () => {
                     GLib.timeout_add(GLib.PRIORITY_DEFAULT, this.settings.get_int('startup-delay'), () => {
-                        Main.layoutManager.disconnect(this.startupCompleteId);
-                        this.startupCompleteId = null;
+                        if (this.startupCompleteId) {
+                            Main.layoutManager.disconnect(this.startupCompleteId);
+                            this.startupCompleteId = null;
+                        }
                         this.innerEnable();
                         return false;
                     });
@@ -104,6 +141,8 @@ export default class HanabiExtension extends Extension {
     }
 
     innerEnable() {
+        if (!this.settings)
+            return;
         this.override.enable();
         this.manager.enable();
         this.autoPause.enable();
@@ -181,7 +220,23 @@ export default class HanabiExtension extends Extension {
     }
 
     disable() {
-        this.settings = null;
+        if (this._showPanelMenuId) {
+            this.settings.disconnect(this._showPanelMenuId);
+            this._showPanelMenuId = null;
+        }
+        if (this._monitorsChangedId) {
+            Main.layoutManager.disconnect(this._monitorsChangedId);
+            this._monitorsChangedId = null;
+        }
+        if (this._startupCompleteId2) {
+            Main.layoutManager.disconnect(this._startupCompleteId2);
+            this._startupCompleteId2 = null;
+        }
+        if (this.startupCompleteId) {
+            Main.layoutManager.disconnect(this.startupCompleteId);
+            this.startupCompleteId = null;
+        }
+
         this.panelMenu.disable();
         Main.sessionMode.hasOverview = this.old_hasOverview;
         this.override.disable();
@@ -189,15 +244,16 @@ export default class HanabiExtension extends Extension {
         this.autoPause.disable();
 
         this.isEnabled = false;
-        this.killCurrentProcess();
+        this.killCurrentProcess(false);
+        this.settings = null;
     }
 
-    killCurrentProcess() {
+    killCurrentProcess(relaunch = true) {
         // If a reload was pending, kill it and schedule a new reload.
         if (this.launchRendererId) {
             GLib.source_remove(this.launchRendererId);
             this.launchRendererId = 0;
-            if (this.isEnabled) {
+            if (this.isEnabled && relaunch) {
                 this.launchRendererId = GLib.timeout_add(
                     GLib.PRIORITY_DEFAULT,
                     this.reloadTime,
@@ -210,10 +266,14 @@ export default class HanabiExtension extends Extension {
             }
         }
 
-        // Kill the renderer. It will be reloaded automatically.
+        // Kill the renderer. It will be reloaded automatically if requested.
         if (this.currentProcess && this.currentProcess.subprocess) {
             this.currentProcess.cancellable.cancel();
             this.currentProcess.subprocess.send_signal(15);
+            // We set currentProcess to null here so that the wait_async callback
+            // (which checks this.currentProcess) knows that this process
+            // is being explicitly managed or killed.
+            this.currentProcess = null;
         }
     }
 
@@ -230,34 +290,35 @@ export default class HanabiExtension extends Extension {
         let info;
         while ((info = fileEnum.next_file(null))) {
             let filename = info.get_name();
-            if (!filename)
-                break;
-
-            let processPath = GLib.build_filenamev(['/proc', filename, 'cmdline']);
-            let processUser = Gio.File.new_for_path(processPath);
-            if (!processUser.query_exists(null))
+            if (!filename || isNaN(parseInt(filename)))
                 continue;
 
-            let [binaryData, etag_] = processUser.load_bytes(null);
-            let contents = '';
-            let readData = binaryData.get_data();
-            for (let i = 0; i < readData.length; i++) {
-                if (readData[i] < 32)
-                    contents += ' ';
-                else
-                    contents += String.fromCharCode(readData[i]);
-            }
-            let path =
-                `gjs ${
-                    GLib.build_filenamev([
-                        this.path,
-                        'renderer',
-                        'renderer.js',
-                    ])}`;
-            if (contents.startsWith(path)) {
-                let proc = new Gio.Subprocess({argv: ['/bin/kill', filename]});
-                proc.init(null);
-                proc.wait(null);
+            let processPath = GLib.build_filenamev(['/proc', filename, 'cmdline']);
+            let processFile = Gio.File.new_for_path(processPath);
+            if (!processFile.query_exists(null))
+                continue;
+
+            try {
+                let [binaryData, etag_] = processFile.load_bytes(null);
+                let readData = binaryData.get_data();
+                let cmdline = '';
+                // cmdline is null-terminated
+                for (let i = 0; i < readData.length; i++) {
+                    if (readData[i] === 0)
+                        cmdline += ' ';
+                    else
+                        cmdline += String.fromCharCode(readData[i]);
+                }
+
+                if (cmdline.includes('renderer.js') && cmdline.includes(applicationId)) {
+                    let proc = new Gio.Subprocess({
+                        argv: ['/bin/kill', '-15', filename],
+                    });
+                    proc.init(null);
+                    proc.wait_async(null, null);
+                }
+            } catch (e) {
+                // Process might have exited already
             }
         }
     }

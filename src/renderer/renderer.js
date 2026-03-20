@@ -90,22 +90,6 @@ const isEnableGraphicsOffload = extSettings
     : false;
 const haveGraphicsOffload = isGtkVersionAtLeast(4, 14) && isEnableGraphicsOffload;
 
-const isGskVulkan = GLib.getenv('GSK_RENDERER') === 'vulkan';
-if (isGskVulkan)
-    console.log('GSK_RENDERER is set to vulkan. Enabling Vulkan optimizations.');
-
-// Check for GNOME experimental HDR feature
-let isHdrEnabled = false;
-try {
-    const mutterSettings = new Gio.Settings({schema_id: 'org.gnome.mutter'});
-    const experimentalFeatures = mutterSettings.get_strv('experimental-features');
-    isHdrEnabled = experimentalFeatures.includes('hdr');
-    if (isHdrEnabled)
-        console.log('GNOME HDR feature detected. Enabling HDR pipeline support.');
-} catch (e) {
-    console.debug('Could not check for HDR feature:', e.message);
-}
-
 let codePath = 'src';
 let contentFit = null;
 if (haveContentFit) {
@@ -439,28 +423,15 @@ const HanabiRenderer = GObject.registerClass(
                 return null;
 
             if (useGstGL) {
-                // If using Vulkan and HDR, skip glsinkbin to avoid 8-bit conversion
-                if (isGskVulkan) {
-                    this._gstImplName = `vulkan-hdr-optimized + ${this._gstImplName}`;
-                } else {
-                    let glsink = Gst.ElementFactory.make(
-                        'glsinkbin',
-                        'glsinkbin'
-                    );
-                    if (glsink) {
-                        this._gstImplName = `glsinkbin + ${this._gstImplName}`;
-                        glsink.set_property('sink', sink);
-                        sink = glsink;
-                    }
+                let glsink = Gst.ElementFactory.make(
+                    'glsinkbin',
+                    'glsinkbin'
+                );
+                if (glsink) {
+                    this._gstImplName = `glsinkbin + ${this._gstImplName}`;
+                    glsink.set_property('sink', sink);
+                    sink = glsink;
                 }
-            }
-
-            // For HDR, we must ensure we don't accidentally tone-map to SDR if we have HDR content.
-            // Modern GstPlay and sinks like gtk4paintablesink handle this via caps negotiation.
-            if (isHdrEnabled && sink) {
-                // Try to find a way to signal we want native HDR (high bit depth)
-                // This is mostly handled automatically by the absence of glsinkbin + vulkan-optimized pipeline.
-                console.log('HDR: Signal path established via high-bit-depth transparent pipeline');
             }
             this._play = GstPlay.Play.new(
                 GstPlay.PlayVideoOverlayVideoRenderer.new_with_sink(null, sink)
@@ -675,7 +646,8 @@ const HanabiRenderer = GObject.registerClass(
                 console.debug(`setAutoWallpaper operation, interval: ${changeWallpaperInterval} min`);
                 // Avoid changing the wallpaper if it's paused to avoid unexpected playback resume.
                 if (this._isPlaying) {
-                    extSettings.set_string('video-path', videoPaths[currentIndex]);
+                    if (extSettings)
+                        extSettings.set_string('video-path', videoPaths[currentIndex]);
 
                     if (changeWallpaperMode === 0)
                         currentIndex = (currentIndex + 1) % videoPaths.length;

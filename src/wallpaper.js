@@ -71,7 +71,15 @@ export const LiveWallpaper = GObject.registerClass(
             backgroundActor.add_child(this);
 
             this._wallpaper = null;
+            this._applyWallpaperId = 0;
             this._applyWallpaper();
+
+            this.connect('destroy', () => {
+                if (this._applyWallpaperId) {
+                    GLib.source_remove(this._applyWallpaperId);
+                    this._applyWallpaperId = 0;
+                }
+            });
 
             this._roundedCornersEffect =
                 new RoundedCornersEffect.RoundedCornersEffect();
@@ -139,8 +147,18 @@ export const LiveWallpaper = GObject.registerClass(
             };
 
             // Perform intial operation without timeout
-            if (operation())
-                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, operation);
+            if (operation()) {
+                this._applyWallpaperId = GLib.timeout_add(
+                    GLib.PRIORITY_DEFAULT,
+                    1000,
+                    () => {
+                        let res = operation();
+                        if (!res)
+                            this._applyWallpaperId = 0;
+                        return res;
+                    }
+                );
+            }
         }
 
         _getRenderer() {

@@ -111,10 +111,11 @@ const PauseOnMaximizeOrFullscreenModule = GObject.registerClass(
             this.conditions = {
                 pauseOnMaximizeOrFullscreen: this._settings.get_int('pause-on-maximize-or-fullscreen'),
             };
-            this._settings.connect('changed::pause-on-maximize-or-fullscreen', () => {
+            this._settingsSignals = [];
+            this._settingsSignals.push(this._settings.connect('changed::pause-on-maximize-or-fullscreen', () => {
                 this.conditions.pauseOnMaximizeOrFullscreen = this._settings.get_int('pause-on-maximize-or-fullscreen');
                 this._update();
-            });
+            }));
 
             this._workspaceManager = null;
             this._activeWorkspace = null;
@@ -140,7 +141,7 @@ const PauseOnMaximizeOrFullscreenModule = GObject.registerClass(
 
         _windowAdded(metaWindow, doUpdate = true) {
             // Not need to track renderer window or skip taskbar window
-            if (metaWindow.title?.includes(applicationId) | metaWindow.skip_taskbar)
+            if (metaWindow.title?.includes(applicationId) || metaWindow.skip_taskbar)
                 return;
 
             let signals = [];
@@ -177,7 +178,7 @@ const PauseOnMaximizeOrFullscreenModule = GObject.registerClass(
         }
 
         _windowRemoved(metaWindow) {
-            if (metaWindow.title?.includes(applicationId) | metaWindow.skip_taskbar)
+            if (metaWindow.title?.includes(applicationId) || metaWindow.skip_taskbar)
                 return;
 
             this._windows = this._windows.filter(window => {
@@ -274,6 +275,12 @@ const PauseOnMaximizeOrFullscreenModule = GObject.registerClass(
         }
 
         disable() {
+            this._settingsSignals.forEach(id => {
+                if (this._settings.handler_is_connected(id))
+                    this._settings.disconnect(id);
+            });
+            this._settingsSignals = [];
+
             this._workspaceManager?.disconnect(this._activeWorkspaceChangedId);
             this._windows.forEach(({metaWindow, signals}) => {
                 signals.forEach(signal => metaWindow.disconnect(signal));
@@ -314,20 +321,22 @@ const PauseOnBatteryModule = GObject.registerClass(
                 pauseOnBattery: this._settings.get_int('pause-on-battery'),
                 lowBatteryThreshold: this._settings.get_int('low-battery-threshold'),
             };
-            this._settings.connect('changed::pause-on-battery', () => {
+            this._settingsSignals = [];
+            this._settingsSignals.push(this._settings.connect('changed::pause-on-battery', () => {
                 this.conditions.pauseOnBattery = this._settings.get_int('pause-on-battery');
                 this._update();
-            });
-            this._settings.connect('changed::low-battery-threshold', () => {
+            }));
+            this._settingsSignals.push(this._settings.connect('changed::low-battery-threshold', () => {
                 this.conditions.lowBatteryThreshold = this._settings.get_int('low-battery-threshold');
                 this._update();
-            });
+            }));
 
             this._upower = new DBus.UPowerWrapper();
+            this._upowerSignalId = null;
         }
 
         enable() {
-            this._upower.proxy.connect('g-properties-changed', (_proxy, properties) => {
+            this._upowerSignalId = this._upower.proxy.connect('g-properties-changed', (_proxy, properties) => {
                 let payload = properties.deep_unpack();
                 if (!payload.hasOwnProperty('State') && !payload.hasOwnProperty('Percentage'))
                     return;
@@ -361,7 +370,16 @@ const PauseOnBatteryModule = GObject.registerClass(
         }
 
         disable() {
+            this._settingsSignals.forEach(id => {
+                if (this._settings.handler_is_connected(id))
+                    this._settings.disconnect(id);
+            });
+            this._settingsSignals = [];
 
+            if (this._upowerSignalId) {
+                this._upower.proxy.disconnect(this._upowerSignalId);
+                this._upowerSignalId = null;
+            }
         }
     }
 );
@@ -381,13 +399,15 @@ const PauseOnMprisPlayingModule = GObject.registerClass(
             this.conditions = {
                 pauseOnMprisPlaying: this._settings.get_boolean('pause-on-mpris-playing'),
             };
-            this._settings.connect('changed::pause-on-mpris-playing', () => {
+            this._settingsSignals = [];
+            this._settingsSignals.push(this._settings.connect('changed::pause-on-mpris-playing', () => {
                 this.conditions.pauseOnMprisPlaying = this._settings.get_boolean('pause-on-mpris-playing');
                 this._update();
-            });
+            }));
 
             this._dbus = new DBus.DBusWrapper();
             this._mediaPlayers = {}; // {$mprisName: {playbackStatus, mpris, mprisPropertiesChangedId}, ...}
+            this._dbusSignalId = null;
         }
 
         enable() {
@@ -404,7 +424,7 @@ const PauseOnMprisPlayingModule = GObject.registerClass(
             });
             this._logger.debug(this._stringifyMediaPlayers());
 
-            this._dbus.proxy.connectSignal('NameOwnerChanged', (_proxy, _sender, [name, oldOwner, newOwner]) => {
+            this._dbusSignalId = this._dbus.proxy.connectSignal('NameOwnerChanged', (_proxy, _sender, [name, oldOwner, newOwner]) => {
                 if (name.startsWith('org.mpris.MediaPlayer2.')) {
                     let mprisName = name;
                     if (oldOwner === '') {
@@ -488,6 +508,12 @@ const PauseOnMprisPlayingModule = GObject.registerClass(
         }
 
         disable() {
+            this._settingsSignals.forEach(id => {
+                if (this._settings.handler_is_connected(id))
+                    this._settings.disconnect(id);
+            });
+            this._settingsSignals = [];
+
             Object.values(this._mediaPlayers).forEach(
                 mediaPlayer => {
                     let mpris = mediaPlayer.mpris;
@@ -496,6 +522,11 @@ const PauseOnMprisPlayingModule = GObject.registerClass(
                 }
             );
             this._mediaPlayers = {};
+
+            if (this._dbusSignalId) {
+                this._dbus.proxy.disconnectSignal(this._dbusSignalId);
+                this._dbusSignalId = null;
+            }
         }
     }
 );

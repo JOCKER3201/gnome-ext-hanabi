@@ -35,6 +35,8 @@ export class HanabiPanelMenu {
         this._playbackState = extension.getPlaybackState();
         this._isPlaying = false;
         this._renderer = new DBus.RendererWrapper();
+        this._signals = [];
+        this._rendererSignalId = null;
     }
 
     enable() {
@@ -70,14 +72,14 @@ export class HanabiPanelMenu {
             this._isPlaying ? _('Pause') : _('Play')
         );
 
-        playPause.connect('activate', () => {
+        this._signals.push(playPause.connect('activate', () => {
             if (this._isPlaying)
                 this._playbackState.userPause();
             else
                 this._playbackState.userPlay();
-        });
+        }));
 
-        this._renderer.proxy.connectSignal(
+        this._rendererSignalId = this._renderer.proxy.connectSignal(
             'isPlayingChanged',
             (_proxy, _sender, [isPlaying]) => {
                 this._isPlaying = isPlaying;
@@ -94,15 +96,15 @@ export class HanabiPanelMenu {
             this._getMute() ? _('Unmute Audio') : _('Mute Audio')
         );
 
-        muteAudio.connect('activate', () => {
+        this._signals.push(muteAudio.connect('activate', () => {
             this._setMute(!this._getMute());
-        });
+        }));
 
-        this._settings.connect('changed::mute', () => {
+        this._signals.push(this._settings.connect('changed::mute', () => {
             muteAudio.label.set_text(
                 this._getMute() ? _('Unmute Audio') : _('Mute Audio')
             );
-        });
+        }));
 
         menu.addMenuItem(muteAudio);
 
@@ -114,12 +116,12 @@ export class HanabiPanelMenu {
         if (!this._getChangeWallpaper())
             nextWallpaperMenuItem.hide();
 
-        this._settings.connect('changed::change-wallpaper', () => {
+        this._signals.push(this._settings.connect('changed::change-wallpaper', () => {
             if (this._getChangeWallpaper())
                 nextWallpaperMenuItem.show();
             else
                 nextWallpaperMenuItem.hide();
-        });
+        }));
 
         // Preferences
         menu.addAction(_('Preferences'), () => {
@@ -180,6 +182,17 @@ export class HanabiPanelMenu {
     disable() {
         if (!this.isEnabled)
             return;
+
+        this._signals.forEach(id => {
+            if (this._settings.handler_is_connected(id))
+                this._settings.disconnect(id);
+        });
+        this._signals = [];
+
+        if (this._rendererSignalId) {
+            this._renderer.proxy.disconnectSignal(this._rendererSignalId);
+            this._rendererSignalId = null;
+        }
 
         this.indicator.destroy();
         this.isEnabled = false;
