@@ -59,8 +59,13 @@ const haveGstAudio = GstAudio !== null;
 // ContentFit is available from Gtk 4.8+
 const haveContentFit = isGtkVersionAtLeast(4, 8);
 
+const gskRenderer = GLib.getenv('GSK_RENDERER');
+const isVulkan = gskRenderer === 'vulkan';
+
 // Use glsinkbin for Gst 1.24+
-const useGstGL = isGstVersionAtLeast(1, 24);
+// But avoid it if we are using Vulkan renderer
+const useGstGL = isGstVersionAtLeast(1, 24) && !isVulkan;
+const useGstVulkan = isGstVersionAtLeast(1, 24) && isVulkan;
 
 const applicationId = 'io.github.jeffshee.HanabiRenderer';
 
@@ -432,6 +437,8 @@ const HanabiRenderer = GObject.registerClass(
                     glsink.set_property('sink', sink);
                     sink = glsink;
                 }
+            } else if (useGstVulkan) {
+                this._gstImplName = `vulkan (direct) + ${this._gstImplName}`;
             }
             this._play = GstPlay.Play.new(
                 GstPlay.PlayVideoOverlayVideoRenderer.new_with_sink(null, sink)
