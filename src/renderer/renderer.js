@@ -59,8 +59,10 @@ const haveGstAudio = GstAudio !== null;
 // ContentFit is available from Gtk 4.8+
 const haveContentFit = isGtkVersionAtLeast(4, 8);
 
-const gskRenderer = GLib.getenv('GSK_RENDERER');
-const isVulkan = gskRenderer === 'vulkan';
+const gskRenderer = GLib.getenv('GSK_RENDERER') || '';
+const isVulkan = gskRenderer.toLowerCase() === 'vulkan';
+if (gskRenderer)
+    console.log(`Detected GSK_RENDERER: ${gskRenderer}`);
 
 // Use glsinkbin for Gst 1.24+
 // But avoid it if we are using Vulkan renderer
@@ -329,13 +331,17 @@ const HanabiRenderer = GObject.registerClass(
                         let sink = null;
                         if (!forceGtk4PaintableSink) {
                             // Try to find "clappersink" for best performance
-                            sink = Gst.ElementFactory.make(
-                                'clappersink',
-                                'clappersink'
-                            );
+                            // but only if we are NOT using Vulkan
+                            if (!isVulkan) {
+                                sink = Gst.ElementFactory.make(
+                                    'clappersink',
+                                    'clappersink'
+                                );
+                            }
                         }
 
-                        // Try "gtk4paintablesink" from gstreamer-rs plugins as 2nd best choice
+                        // Try "gtk4paintablesink" from gstreamer-rs plugins
+                        // This is the preferred way for GTK4 Vulkan backend
                         if (!sink) {
                             sink = Gst.ElementFactory.make(
                                 'gtk4paintablesink',
